@@ -138,6 +138,8 @@ function draw(){
     grid.forEach(h=>{
         h.x = cx + hexSize*1.5*h.q;
         h.y = cy + hexSize*(Math.sqrt(3)/2*h.q + Math.sqrt(3)*h.r);
+
+        // 顏色
         let color="#3a3a3a";
         if(h.type==='obstacle') color="#555";
         else if(h.owner) color=playerColors[h.owner-1];
@@ -150,12 +152,27 @@ function draw(){
         ctx.closePath();
         ctx.fillStyle=color;
         ctx.fill();
+
+        // 🔹 落子提示
+        if(selected && h.owner===0 && h.type==='normal'){
+            const d = dist(selected,h);
+            if(d===1){
+                ctx.fillStyle = "rgba(0,255,0,0.4)"; // 複製
+                ctx.fill();
+            } else if(d===2){
+                ctx.fillStyle = "rgba(255,255,0,0.4)"; // 跳躍
+                ctx.fill();
+            }
+        }
+
+        // 選中格子邊框
         if(h===selected){
             ctx.strokeStyle="#fff";
             ctx.lineWidth=3;
             ctx.stroke();
         }
     });
+
     requestAnimationFrame(draw);
 }
 
