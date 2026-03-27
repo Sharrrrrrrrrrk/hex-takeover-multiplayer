@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Hex Takeover Pro - 回合制悔棋版</title>
+<title>Hex Takeover - Firebase 回合制</title>
 <style>
 body { margin:0; background:#1a1a1a; color:white; font-family:'Segoe UI'; display:flex; height:100vh;}
 #sidebar { width:260px; background:#333; padding:20px; display:flex; flex-direction:column; gap:12px; overflow-y:auto;}
@@ -36,12 +36,11 @@ button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color
 
 <div id="main">
 <canvas id="c" width="800" height="600"></canvas>
-
 <div id="chatBox"></div>
 <div id="chatInput">
 <input id="name" placeholder="名字" />
 <input id="msg" placeholder="輸入訊息..." />
-<button onclick="sendMessage()">送出</button>
+<button id="sendBtn">送出</button>
 </div>
 </div>
 
@@ -49,46 +48,42 @@ button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getDatabase, ref, push, onValue, set, get, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
-// 🔴 替換成你的 Firebase config
+// 🔴 填入你的 Firebase config
 const firebaseConfig = {
-      apiKey: "AIzaSyCo8StZeM0NRGi9XoTfmTCe_VovLt8nGjw",
-      authDomain: "my-game-d7829.firebaseapp.com",
-      databaseURL: "https://my-game-d7829-default-rtdb.asia-southeast1.firebasedatabase.app",
-      projectId: "my-game-d7829",
-      storageBucket: "my-game-d7829.firebasestorage.app",
-      messagingSenderId: "1037507538095",
-      appId: "1:1037507538095:web:622371a6f117d60e6bb85a"
-    };
+  apiKey: "你的APIKEY",
+  authDomain: "你的ID.firebaseapp.com",
+  databaseURL: "https://你的ID-default-rtdb.firebaseio.com",
+  projectId: "你的ID"
+};
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 // ===== 聊天功能 =====
 const messagesRef = ref(db, "messages");
-onValue(messagesRef, snapshot => {
-    const data = snapshot.val();
+onValue(messagesRef, snap=>{
+    const data = snap.val();
     const box = document.getElementById("chatBox");
     box.innerHTML = "";
     if(!data) return;
-    Object.values(data).forEach(m => {
+    Object.values(data).forEach(m=>{
         box.innerHTML += `<div><b>${m.name}:</b> ${m.text}</div>`;
     });
     box.scrollTop = box.scrollHeight;
 });
-
-function sendMessage() {
-    const name = document.getElementById("name").value || "匿名";
+document.getElementById("sendBtn").onclick = ()=>{
+    const name = document.getElementById("name").value||"匿名";
     const text = document.getElementById("msg").value;
     if(!text) return;
-    push(messagesRef, { name, text });
-    document.getElementById("msg").value = "";
+    push(messagesRef,{name,text});
+    document.getElementById("msg").value="";
 }
 
 // ===== 遊戲核心 =====
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const playerColors = ["#00e5ff","#ff5252","#4caf50","#ffeb3b","#9c27b0","#ff9800"];
-let players=[], grid=[], hexSize, selected=null, gameActive=true, radius=3;
-let myId = null, myPlayer = null;
+let grid=[], hexSize=50, selected=null, gameActive=true, radius=3;
+let myId=null, myPlayer=null, currentTurn=null;
 const sizeRange = document.getElementById('sizeRange');
 const obsRange = document.getElementById('obsRange');
 const playerRange = document.getElementById('playerCountRange');
@@ -97,165 +92,56 @@ const legend = document.getElementById('legend');
 const initBtn = document.getElementById('initBtn');
 const undoBtn = document.getElementById('undoBtn');
 
-sizeRange.oninput=()=>sizeValue.innerText=sizeRange.value;
-obsRange.oninput=()=>obsValue.innerText=obsRange.value;
-playerRange.oninput=()=>playerCountValue.innerText=playerRange.value;
+// 🔹 Firebase 節點
+const boardRef = ref(db,"board");
+const playersRef = ref(db,"players");
+const turnRef = ref(db,"turn");
+const historyRef = ref(db,"history");
 
+// 更新 UI
+function updateUI(){
+    const maxPlayers = +playerRange.value;
+    let html="";
+    for(let p=1;p<=maxPlayers;p++){
+        let count = grid.filter(h=>h.owner===p).length;
+        html += `<div style="color:${playerColors[p-1]}">玩家${p}: ${count}</div>`;
+    }
+    if(myPlayer) html+=`<div>你是玩家 ${myPlayer} ${currentTurn===myPlayer?'【你的回合】':'【等待回合】'}</div>`;
+    else html+=`<div>觀戰中，輪到玩家 ${currentTurn}</div>`;
+    status.innerHTML=html;
+
+    let leg="";
+    for(let p=1;p<=maxPlayers;p++){
+        leg+=`<div style="color:${playerColors[p-1]}">■ 玩家${p}</div>`;
+    }
+    legend.innerHTML=leg;
+}
+
+// 計算距離
 function dist(a,b){ return (Math.abs(a.q-b.q)+Math.abs(a.q+a.r-b.q-b.r)+Math.abs(a.r-b.r))/2; }
 
-// ===== Firebase 節點 =====
-const boardRef = ref(db, "board");
-const playersRef = ref(db, "players");
-const turnRef = ref(db, "turn");
-const historyRef = ref(db, "history");
-
-// 自動分配玩家身份
-function joinGame(){
-    myId = crypto.randomUUID();
-    runTransaction(playersRef, current=>{
-        if(current === null) current = {};
-        const count = Object.keys(current).length;
-        const maxPlayers = +playerCountValue.innerText;
-        if(count >= maxPlayers) return;
-        current[myId] = count+1;
-        myPlayer = current[myId];
-        return current;
-    }).then(res=>{
-        if(!myPlayer) status.innerHTML = "觀戰中"; 
-        else status.innerHTML = `你是玩家 ${myPlayer}`;
-    });
-}
-
-// 初始化棋盤
-initBtn.onclick = async ()=>{
-    const snap = await get(boardRef);
-    if(snap.exists()) return alert("棋盤已存在！");
-    radius = +sizeRange.value;
-    const tempGrid = [];
-    for(let q=-radius;q<=radius;q++){
-        for(let r=Math.max(-radius,-q-radius);r<=Math.min(radius,-q+radius);r++){
-            tempGrid.push({q,r,type:'normal',owner:0});
-        }
-    }
-    const maxPlayers = +playerCountValue.innerText;
-    const starts=[[0,-radius],[radius,-radius],[radius,0],[0,radius],[-radius,radius],[-radius,0]];
-    for(let i=0;i<maxPlayers;i++){
-        const h = tempGrid.find(cell=>cell.q===starts[i][0] && cell.r===starts[i][1]);
-        if(h){ h.owner=i+1; h.type='spawn'; }
-    }
-    let normals = tempGrid.filter(c=>c.type==='normal');
-    for(let i=0;i<+obsRange.value;i++){
-        if(normals.length===0) break;
-        const idx = Math.floor(Math.random()*normals.length);
-        normals[idx].type='obstacle';
-        normals.splice(idx,1);
-    }
-    set(boardRef, tempGrid);
-    set(turnRef, 1);
-    set(historyRef, [{grid: tempGrid, turn:1}]);
-};
-
-// 監聽棋盤、回合、歷史
-onValue(boardRef, snap=>{
-    const data = snap.val();
-    if(!data) return;
-    grid = data.map(h=>({...h}));
-    updateUI();
-});
-
-let currentTurn = null;
-onValue(turnRef, snap=>{
-    currentTurn = snap.val();
-    updateUI();
-});
-
-// 玩家落子
-canvas.onclick = e=>{
-    if(!gameActive || !myPlayer || myPlayer !== currentTurn) return;
-    const rect=canvas.getBoundingClientRect();
-    const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
-    const my=(e.clientY-rect.top)*(canvas.height/rect.height);
-    let h=grid.find(x=>Math.hypot(x.x-mx,x.y-my)<hexSize*0.8);
-    if(!h) return;
-    if(h.owner===myPlayer){
-        selected = selected===h?null:h;
-    } else if(selected && h.owner===0 && h.type==='normal'){
-        if(dist(selected,h)<=2){
-            makeMove(selected,h);
-            selected=null;
-        }
-    }
-};
-
-// 落子並存歷史
-function makeMove(a,b){
-    const aIndex = grid.findIndex(h=>h.q===a.q && h.r===a.r);
-    const bIndex = grid.findIndex(h=>h.q===b.q && h.r===b.r);
-    if(dist(a,b)===2) grid[aIndex].owner = 0;
-    grid[bIndex].owner = myPlayer;
-    grid.forEach((h,i)=>{
-        if(dist(b,h)===1 && h.owner!==0 && h.owner!==myPlayer){
-            grid[i].owner = myPlayer;
-        }
-    });
-    set(boardRef, grid);
-
-    // 保存歷史
-    runTransaction(historyRef, h=>{
-        if(!h) h=[];
-        h.push({grid: grid.map(c=>({...c})), turn: currentTurn});
-        return h;
-    });
-
-    // 更新回合
-    runTransaction(turnRef, t=>{
-        const maxPlayers = +playerCountValue.innerText;
-        let next = t;
-        for(let i=0;i<maxPlayers;i++){
-            next = next % maxPlayers + 1;
-            if(grid.some(h=>h.owner===next)) return next;
-        }
-        return t;
-    });
-}
-
-// 悔棋
-undoBtn.onclick = async ()=>{
-    if(!myPlayer) return alert("觀戰玩家不能悔棋");
-    const snap = await get(historyRef);
-    if(!snap.exists()) return;
-    let h = snap.val();
-    if(h.length<2) return;
-    const last = h[h.length-1];
-    if(last.turn !== myPlayer) return alert("只能悔自己的回合");
-    h.pop(); // 移除最後一手
-    const prev = h[h.length-1];
-    set(boardRef, prev.grid);
-    set(turnRef, prev.turn);
-    set(historyRef, h);
-}
-
-// 畫面更新
+// draw hex
 function draw(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    const size = Math.min(
-        (canvas.width-100)/(3*+sizeRange.value+1.5),
-        (canvas.height-100)/(Math.sqrt(3)*(2*+sizeRange.value+1))
-    );
-    hexSize = size;
     const cx = canvas.width/2;
     const cy = canvas.height/2;
+    const size = Math.min(
+        (canvas.width-100)/(3*radius+1.5),
+        (canvas.height-100)/(Math.sqrt(3)*(2*radius+1))
+    );
+    hexSize = size;
+
     grid.forEach(h=>{
-        const x = cx + hexSize*1.5*h.q;
-        const y = cy + hexSize*(Math.sqrt(3)/2*h.q + Math.sqrt(3)*h.r);
-        h.x=x; h.y=y;
+        h.x = cx + hexSize*1.5*h.q;
+        h.y = cy + hexSize*(Math.sqrt(3)/2*h.q + Math.sqrt(3)*h.r);
         let color="#3a3a3a";
         if(h.type==='obstacle') color="#555";
         else if(h.owner) color=playerColors[h.owner-1];
+
         ctx.beginPath();
         for(let i=0;i<6;i++){
-            let a=Math.PI/3*i;
-            ctx.lineTo(x+hexSize*0.9*Math.cos(a),y+hexSize*0.9*Math.sin(a));
+            const a = Math.PI/3*i;
+            ctx.lineTo(h.x+hexSize*0.9*Math.cos(a),h.y+hexSize*0.9*Math.sin(a));
         }
         ctx.closePath();
         ctx.fillStyle=color;
@@ -269,25 +155,120 @@ function draw(){
     requestAnimationFrame(draw);
 }
 
-function updateUI(){
-    const maxPlayers = +playerCountValue.innerText;
-    players = Array.from({length:maxPlayers},(_,i)=>i+1);
-    let html="";
-    players.forEach(p=>{
-        let count=grid.filter(h=>h.owner===p).length;
-        html+=`<div style="color:${playerColors[p-1]}">玩家${p}: ${count}</div>`;
-    });
-    if(myPlayer) html += `<div>你是玩家 ${myPlayer} ${currentTurn===myPlayer?'【你的回合】':'【等待回合】'}</div>`;
-    else html += `<div>觀戰中，輪到玩家 ${currentTurn}</div>`;
-    status.innerHTML=html;
-    let leg="";
-    players.forEach(p=>{
-        leg+=`<div style="color:${playerColors[p-1]}">■ 玩家${p}</div>`;
-    });
-    legend.innerHTML=leg;
+// 初始化棋盤
+initBtn.onclick = async ()=>{
+    radius = +sizeRange.value;
+    const tempGrid = [];
+    for(let q=-radius;q<=radius;q++){
+        for(let r=Math.max(-radius,-q-radius);r<=Math.min(radius,-q+radius);r++){
+            tempGrid.push({q,r,type:'normal',owner:0});
+        }
+    }
+    const maxPlayers = +playerRange.value;
+    const starts=[[0,-radius],[radius,-radius],[radius,0],[0,radius],[-radius,radius],[-radius,0]];
+    for(let i=0;i<maxPlayers;i++){
+        const h = tempGrid.find(c=>c.q===starts[i][0] && c.r===starts[i][1]);
+        if(h){ h.owner=i+1; h.type='spawn'; }
+    }
+    let normals = tempGrid.filter(c=>c.type==='normal');
+    for(let i=0;i<+obsRange.value;i++){
+        if(normals.length===0) break;
+        const idx = Math.floor(Math.random()*normals.length);
+        normals[idx].type='obstacle';
+        normals.splice(idx,1);
+    }
+    set(boardRef,tempGrid);
+    set(turnRef,1);
+    set(historyRef,[{grid:tempGrid, turn:1}]);
 }
 
-joinGame();
+// 監聽棋盤
+onValue(boardRef, snap=>{
+    const data = snap.val();
+    if(!data) return;
+    grid = data.map(c=>({...c}));
+    updateUI();
+});
+
+// 監聽回合
+onValue(turnRef, snap=>{
+    currentTurn = snap.val();
+    updateUI();
+});
+
+// 玩家加入
+myId = crypto.randomUUID();
+runTransaction(playersRef, current=>{
+    if(!current) current={};
+    const count = Object.keys(current).length;
+    const maxPlayers = +playerRange.value;
+    if(count>=maxPlayers) return;
+    current[myId]=count+1;
+    myPlayer = current[myId];
+    return current;
+}).then(()=>{ updateUI(); });
+
+// 落子
+canvas.onclick = e=>{
+    if(!gameActive || !myPlayer || myPlayer!==currentTurn) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX-rect.left)*(canvas.width/rect.width);
+    const my = (e.clientY-rect.top)*(canvas.height/rect.height);
+    let h = grid.find(c=>Math.hypot(c.x-mx,c.y-my)<hexSize*0.8);
+    if(!h) return;
+    if(h.owner===myPlayer) selected = selected===h?null:h;
+    else if(selected && h.owner===0 && h.type==='normal'){
+        if(dist(selected,h)<=2) makeMove(selected,h);
+        selected=null;
+    }
+};
+
+// 落子動作
+function makeMove(a,b){
+    const aIndex = grid.findIndex(h=>h.q===a.q && h.r===a.r);
+    const bIndex = grid.findIndex(h=>h.q===b.q && h.r===b.r);
+    if(dist(a,b)===2) grid[aIndex].owner=0;
+    grid[bIndex].owner=myPlayer;
+    grid.forEach((h,i)=>{
+        if(dist(b,h)===1 && h.owner!==0 && h.owner!==myPlayer){
+            grid[i].owner=myPlayer;
+        }
+    });
+    set(boardRef,grid);
+
+    runTransaction(historyRef,h=>{
+        if(!h) h=[];
+        h.push({grid:grid.map(c=>({...c})), turn:currentTurn});
+        return h;
+    });
+
+    runTransaction(turnRef,t=>{
+        const maxPlayers = +playerRange.value;
+        let next = t;
+        for(let i=0;i<maxPlayers;i++){
+            next = next % maxPlayers + 1;
+            if(grid.some(c=>c.owner===next)) return next;
+        }
+        return t;
+    });
+}
+
+// 悔棋
+undoBtn.onclick = async ()=>{
+    if(!myPlayer) return alert("觀戰不能悔棋");
+    const snap = await get(historyRef);
+    if(!snap.exists()) return;
+    let h = snap.val();
+    if(h.length<2) return;
+    const last = h[h.length-1];
+    if(last.turn!==myPlayer) return alert("只能悔自己的回合");
+    h.pop();
+    const prev = h[h.length-1];
+    set(boardRef,prev.grid);
+    set(turnRef,prev.turn);
+    set(historyRef,h);
+}
+
 draw();
 </script>
 </body>
