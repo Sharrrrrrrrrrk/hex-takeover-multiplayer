@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hex Takeover Pro - 多人版</title>
+<style>
+body { margin:0; background:#1a1a1a; color:white; font-family:'Segoe UI'; display:flex; height:100vh;}
+#sidebar { width:260px; background:#333; padding:20px; display:flex; flex-direction:column; gap:12px; overflow-y:auto;}
+#main { flex:1; display:flex; flex-direction:column; align-items:center;}
+canvas { background:#252525; border-radius:15px; max-width:95%; max-height:60%; cursor:pointer; margin-bottom:10px;}
+button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color:white; cursor:pointer;}
+.legend div{margin:3px 0;}
+#chatBox { flex:1; background:#222; padding:5px; overflow-y:auto; border-radius:8px; margin-top:10px; }
+#chatInput { display:flex; gap:5px; margin-top:5px; }
+#chatInput input { flex:1; padding:5px; border-radius:5px; border:none; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+<label>玩家數量: <span id="playerCountValue">2</span></label>
+<input type="range" id="playerCountRange" min="2" max="6" value="2">
+
+<label>棋盤大小: <span id="sizeValue">3</span></label>
+<input type="range" id="sizeRange" min="2" max="8" value="3">
+
+<label>障礙物: <span id="obsValue">2</span></label>
+<input type="range" id="obsRange" min="0" max="15" value="2">
+
+<button onclick="initGameLocal()">重置(本地)</button>
+<div id="status"></div>
+<div class="legend" id="legend"></div>
+</div>
+
+<div id="main">
+<canvas id="c" width="800" height="600"></canvas>
+
+<div id="chatBox"></div>
+<div id="chatInput">
+<input id="name" placeholder="名字" />
+<input id="msg" placeholder="輸入訊息..." />
+<button onclick="sendMessage()">送出</button>
+</div>
+</div>
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, push, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// 🔴 替換成你的 Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyCo8StZeM0NRGi9XoTfmTCe_VovLt8nGjw",
+  authDomain: "my-game-d7829.firebaseapp.com",
+  databaseURL: "https://my-game-d7829-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "my-game-d7829",
+  storageBucket: "my-game-d7829.firebasestorage.app",
+  messagingSenderId: "1037507538095",
+  appId: "1:1037507538095:web:622371a6f117d60e6bb85a"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// ===== 聊天功能 =====
+const messagesRef = ref(db, "messages");
+onValue(messagesRef, snapshot => {
+    const data = snapshot.val();
+    const box = document.getElementById("chatBox");
+    box.innerHTML = "";
+    if(!data) return;
+    Object.values(data).forEach(m => {
+        box.innerHTML += `<div><b>${m.name}:</b> ${m.text}</div>`;
+    });
+    box.scrollTop = box.scrollHeight;
+});
+
+function sendMessage() {
+    const name = document.getElementById("name").value || "匿名";
+    const text = document.getElementById("msg").value;
+    if(!text) return;
+    push(messagesRef, { name, text });
+    document.getElementById("msg").value = "";
+}
+
+// ===== 遊戲核心 =====
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const playerColors = ["#00e5ff","#ff5252","#4caf50","#ffeb3b","#9c27b0","#ff9800"];
+let players=[], currentIndex=0;
+let grid=[], hexSize, history=[];
+let selected=null, hovered=null;
+let gameActive=true, radius=3;
+
+const sizeRange = document.getElementById('sizeRange');
+const obsRange = document.getElementById('obsRange');
+const playerRange = document.getElementById('playerCountRange');
+const status = document.getElementById('status');
+const legend = document.getElementById('legend');
+
+sizeRange.oninput=()=>sizeValue.innerText=sizeRange.value;
+obsRange.oninput=()=>obsValue.innerText=obsRange.value;
+playerRange.oninput=()=>playerCountValue.innerText=playerRange.value;
+
+function dist(a,b){ return (Math.abs(a.q-b.q)+Math.abs(a.q+a.r-b.q-b.r)+Math.abs(a.r-b.r))/2; }
+function getHex(q,r){ return grid.find(h=>h.q===q && h.r===r); }
+function getPlayer(){ return players[currentIndex]; }
+
+// ===== 初始化本地遊戲 (玩家可用) =====
+function initGameLocal(){
+    radius = +sizeRange.value;
+    players = Array.from({length:+playerRange.value},(_,i)=>i+1);
+    currentIndex=0;
+    grid=[]; history=[]; selected=null; gameActive=true;
+
+    const size = Math.min(
+        (canvas.width-100)/(3*radius+1.5),
+        (canvas.height-100)/(Math.sqrt(3)*(2*radius+1))
+    );
+    hexSize=size;
+
+    for(let q=-radius;q<=radius;q++){
+        for(let r=Math.max(-radius,-q-radius);r<=Math.min(radius,-q+radius);r++){
+            const x=canvas.width/2+hexSize*1.5*q;
+            const y=canvas.height/2+hexSize*(Math.sqrt(3)/2*q+Math.sqrt(3)*r);
+            grid.push({q,r,x,y,owner:0,type:'normal',scale:1});
+        }
+    }
+
+    const starts=[[0,-radius],[radius,-radius],[radius,0],[0,radius],[-radius,radius],[-radius,0]];
+    players.forEach((p,i)=>{ let h=getHex(...starts[i]); if(h){ h.owner=p; h.type='spawn'; } });
+
+    generateObstacles(+obsRange.value);
+    saveStateToFirebase();
+    updateUI();
+}
+
+// ===== 產生障礙 =====
+function generateObstacles(n){
+    let c = grid.filter(h=>h.type==='normal' && !grid.some(s=>s.type==='spawn' && dist(s,h)<=1));
+    for(let i=0;i<n;i++){
+        if(c.length===0) break;
+        let idx=Math.floor(Math.random()*c.length);
+        c[idx].type='obstacle';
+        c.splice(idx,1);
+    }
+}
+
+// ===== 玩家動作同步 =====
+canvas.onclick=e=>{
+    if(!gameActive) return;
+    const rect=canvas.getBoundingClientRect();
+    const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+    const my=(e.clientY-rect.top)*(canvas.height/rect.height);
+
+    let h=grid.find(x=>Math.hypot(x.x-mx,x.y-my)<hexSize*0.8);
+    if(!h) return;
+
+    if(h.owner===getPlayer()){
+        selected = selected===h?null:h;
+    } else if(selected && h.owner===0 && h.type==='normal'){
+        if(dist(selected,h)<=2){
+            makeMove(selected,h);
+            selected=null;
+        }
+    }
+};
+
+// ===== 將動作寫入 Firebase =====
+function makeMove(a,b){
+    // 儲存動作到 Firebase
+    push(ref(db,"moves"),{
+        from:{q:a.q,r:a.r},
+        to:{q:b.q,r:b.r},
+        player:getPlayer()
+    });
+}
+
+// ===== 監聽 Firebase 動作，更新棋盤 =====
+onValue(ref(db,"moves"), snapshot=>{
+    const data = snapshot.val();
+    if(!data) return;
+    grid.forEach(h=>{ if(h.type!=='spawn' && h.owner>0) h.owner=0; }); // 重置非出生棋子
+    Object.values(data).forEach(m=>{
+        let a = getHex(m.from.q,m.from.r);
+        let b = getHex(m.to.q,m.to.r);
+        if(dist(a,b)===2) a.owner=0;
+        b.owner=m.player;
+        grid.forEach(h=>{
+            if(dist(b,h)===1 && h.owner!==0 && h.owner!==m.player){
+                h.owner=m.player;
+            }
+        });
+    });
+    updateUI();
+});
+
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    grid.forEach(h=>{
+        let color="#3a3a3a";
+        if(h.type==='obstacle') color="#555";
+        else if(h.owner) color=playerColors[h.owner-1];
+
+        ctx.beginPath();
+        for(let i=0;i<6;i++){
+            let a=Math.PI/3*i;
+            ctx.lineTo(h.x+hexSize*0.9*Math.cos(a),h.y+hexSize*0.9*Math.sin(a));
+        }
+        ctx.closePath();
+        ctx.fillStyle=color;
+        ctx.fill();
+
+        if(h===selected){
+            ctx.strokeStyle="#fff";
+            ctx.lineWidth=3;
+            ctx.stroke();
+        }
+    });
+    requestAnimationFrame(draw);
+}
+
+function updateUI(){
+    let html="";
+    players.forEach(p=>{
+        let count=grid.filter(h=>h.owner===p).length;
+        html+=`<div style="color:${playerColors[p-1]}">玩家${p}: ${count}</div>`;
+    });
+    status.innerHTML=html+"<br>目前: 玩家"+getPlayer();
+
+    let leg="";
+    players.forEach(p=>{
+        leg+=`<div style="color:${playerColors[p-1]}">■ 玩家${p}</div>`;
+    });
+    legend.innerHTML=leg;
+}
+
+function saveStateToFirebase(){
+    // 初始化棋盤
+    set(ref(db,"moves"),{});
+}
+
+initGameLocal();
+draw();
+</script>
+</body>
+</html>
