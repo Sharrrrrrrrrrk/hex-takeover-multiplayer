@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Hex Takeover - Firebase 回合制</title>
+<title>Hex Takeover - Firebase 多人版</title>
 <style>
 body { margin:0; background:#1a1a1a; color:white; font-family:'Segoe UI'; display:flex; height:100vh;}
 #sidebar { width:260px; background:#333; padding:20px; display:flex; flex-direction:column; gap:12px; overflow-y:auto;}
@@ -50,11 +50,14 @@ import { getDatabase, ref, push, onValue, set, get, runTransaction } from "https
 
 // 🔴 填入你的 Firebase config
 const firebaseConfig = {
-  apiKey: "你的APIKEY",
-  authDomain: "你的ID.firebaseapp.com",
-  databaseURL: "https://你的ID-default-rtdb.firebaseio.com",
-  projectId: "你的ID"
-};
+      apiKey: "AIzaSyCo8StZeM0NRGi9XoTfmTCe_VovLt8nGjw",
+      authDomain: "my-game-d7829.firebaseapp.com",
+      databaseURL: "https://my-game-d7829-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "my-game-d7829",
+      storageBucket: "my-game-d7829.firebasestorage.app",
+      messagingSenderId: "1037507538095",
+      appId: "1:1037507538095:web:622371a6f117d60e6bb85a"
+    };
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
@@ -97,6 +100,7 @@ const boardRef = ref(db,"board");
 const playersRef = ref(db,"players");
 const turnRef = ref(db,"turn");
 const historyRef = ref(db,"history");
+const victoryRef = ref(db,"victory");
 
 // 更新 UI
 function updateUI(){
@@ -180,6 +184,8 @@ initBtn.onclick = async ()=>{
     set(boardRef,tempGrid);
     set(turnRef,1);
     set(historyRef,[{grid:tempGrid, turn:1}]);
+    set(victoryRef,null);
+    gameActive=true;
 }
 
 // 監聽棋盤
@@ -234,6 +240,7 @@ function makeMove(a,b){
             grid[i].owner=myPlayer;
         }
     });
+
     set(boardRef,grid);
 
     runTransaction(historyRef,h=>{
@@ -241,6 +248,8 @@ function makeMove(a,b){
         h.push({grid:grid.map(c=>({...c})), turn:currentTurn});
         return h;
     });
+
+    checkVictory();
 
     runTransaction(turnRef,t=>{
         const maxPlayers = +playerRange.value;
@@ -252,6 +261,30 @@ function makeMove(a,b){
         return t;
     });
 }
+
+// 檢查勝利
+function checkVictory(){
+    const alive = [];
+    const maxPlayers = +playerRange.value;
+    for(let p=1;p<=maxPlayers;p++){
+        if(grid.some(c=>c.owner===p)) alive.push(p);
+    }
+    if(alive.length <= 1){
+        gameActive=false;
+        let msg = alive.length===1 ? `玩家 ${alive[0]} 勝利！` : "平手！";
+        status.innerHTML += `<br><b style="color:#ff0">${msg}</b>`;
+        set(victoryRef, msg);
+    }
+}
+
+// 監聽勝利訊息
+onValue(victoryRef, snap=>{
+    const msg = snap.val();
+    if(msg) {
+        gameActive=false;
+        status.innerHTML += `<br><b style="color:#ff0">${msg}</b>`;
+    }
+});
 
 // 悔棋
 undoBtn.onclick = async ()=>{
