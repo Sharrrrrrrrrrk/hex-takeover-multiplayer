@@ -48,7 +48,7 @@ button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getDatabase, ref, push, onValue, set, get, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
-// 🔴 填入你的 Firebase config
+// 🔴 替換成你的 Firebase config
 const firebaseConfig = {
       apiKey: "AIzaSyCo8StZeM0NRGi9XoTfmTCe_VovLt8nGjw",
       authDomain: "my-game-d7829.firebaseapp.com",
@@ -95,7 +95,7 @@ const legend = document.getElementById('legend');
 const initBtn = document.getElementById('initBtn');
 const undoBtn = document.getElementById('undoBtn');
 
-// 🔹 Firebase 節點
+// Firebase 節點
 const boardRef = ref(db,"board");
 const playersRef = ref(db,"players");
 const turnRef = ref(db,"turn");
@@ -110,8 +110,11 @@ function updateUI(){
         let count = grid.filter(h=>h.owner===p).length;
         html += `<div style="color:${playerColors[p-1]}">玩家${p}: ${count}</div>`;
     }
-    if(myPlayer) html+=`<div>你是玩家 ${myPlayer} ${currentTurn===myPlayer?'【你的回合】':'【等待回合】'}</div>`;
-    else html+=`<div>觀戰中，輪到玩家 ${currentTurn}</div>`;
+    if(myPlayer) {
+        html += `<div>你是玩家 ${myPlayer} ${currentTurn===myPlayer?'【你的回合】':'【等待回合】'}</div>`;
+    } else {
+        html += `<div>觀戰中，輪到玩家 ${currentTurn}</div>`;
+    }
     status.innerHTML=html;
 
     let leg="";
@@ -124,7 +127,7 @@ function updateUI(){
 // 計算距離
 function dist(a,b){ return (Math.abs(a.q-b.q)+Math.abs(a.q+a.r-b.q-b.r)+Math.abs(a.r-b.r))/2; }
 
-// draw hex
+// draw hex + 提示
 function draw(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
     const cx = canvas.width/2;
@@ -153,19 +156,13 @@ function draw(){
         ctx.fillStyle=color;
         ctx.fill();
 
-        // 🔹 落子提示
+        // 提示
         if(selected && h.owner===0 && h.type==='normal'){
             const d = dist(selected,h);
-            if(d===1){
-                ctx.fillStyle = "rgba(0,255,0,0.4)"; // 複製
-                ctx.fill();
-            } else if(d===2){
-                ctx.fillStyle = "rgba(255,255,0,0.4)"; // 跳躍
-                ctx.fill();
-            }
+            if(d===1){ ctx.fillStyle = "rgba(0,255,0,0.4)"; ctx.fill(); }
+            else if(d===2){ ctx.fillStyle = "rgba(0,150,255,0.4)"; ctx.fill(); }
         }
 
-        // 選中格子邊框
         if(h===selected){
             ctx.strokeStyle="#fff";
             ctx.lineWidth=3;
@@ -241,7 +238,7 @@ canvas.onclick = e=>{
     if(!h) return;
     if(h.owner===myPlayer) selected = selected===h?null:h;
     else if(selected && h.owner===0 && h.type==='normal'){
-        if(dist(selected,h)<=2) makeMove(selected,h);
+        if(dist(selected,h)<=2){ makeMove(selected,h); }
         selected=null;
     }
 };
@@ -268,6 +265,7 @@ function makeMove(a,b){
 
     checkVictory();
 
+    // 更新回合
     runTransaction(turnRef,t=>{
         const maxPlayers = +playerRange.value;
         let next = t;
