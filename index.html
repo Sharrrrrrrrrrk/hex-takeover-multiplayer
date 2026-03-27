@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Hex Takeover Pro - 多人版</title>
+<title>Hex Takeover Pro - 自動分配版</title>
 <style>
 body { margin:0; background:#1a1a1a; color:white; font-family:'Segoe UI'; display:flex; height:100vh;}
 #sidebar { width:260px; background:#333; padding:20px; display:flex; flex-direction:column; gap:12px; overflow-y:auto;}
@@ -27,7 +27,7 @@ button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color
 <label>障礙物: <span id="obsValue">2</span></label>
 <input type="range" id="obsRange" min="0" max="15" value="2">
 
-<button onclick="initGameLocal()">重置(本地)</button>
+<button id="initBtn">初始化棋盤</button>
 <div id="status"></div>
 <div class="legend" id="legend"></div>
 </div>
@@ -43,20 +43,16 @@ button { padding:6px; border:none; border-radius:10px; background:#00bcd4; color
 </div>
 </div>
 
-<!-- Firebase -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, push, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, push, onValue, set, get, child, update, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // 🔴 替換成你的 Firebase config
 const firebaseConfig = {
-  apiKey: "AIzaSyCo8StZeM0NRGi9XoTfmTCe_VovLt8nGjw",
-  authDomain: "my-game-d7829.firebaseapp.com",
-  databaseURL: "https://my-game-d7829-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "my-game-d7829",
-  storageBucket: "my-game-d7829.firebasestorage.app",
-  messagingSenderId: "1037507538095",
-  appId: "1:1037507538095:web:622371a6f117d60e6bb85a"
+  apiKey: "你的APIKEY",
+  authDomain: "你的ID.firebaseapp.com",
+  databaseURL: "https://你的ID-default-rtdb.firebaseio.com",
+  projectId: "你的ID"
 };
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
@@ -87,75 +83,93 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const playerColors = ["#00e5ff","#ff5252","#4caf50","#ffeb3b","#9c27b0","#ff9800"];
 let players=[], currentIndex=0;
-let grid=[], hexSize, history=[];
-let selected=null, hovered=null;
-let gameActive=true, radius=3;
+let grid=[], hexSize, selected=null, gameActive=true, radius=3;
+let myId = null; // 每個玩家唯一ID
+let myPlayer = null; // 自己的 Player X
 
 const sizeRange = document.getElementById('sizeRange');
 const obsRange = document.getElementById('obsRange');
 const playerRange = document.getElementById('playerCountRange');
 const status = document.getElementById('status');
 const legend = document.getElementById('legend');
+const initBtn = document.getElementById('initBtn');
 
 sizeRange.oninput=()=>sizeValue.innerText=sizeRange.value;
 obsRange.oninput=()=>obsValue.innerText=obsRange.value;
 playerRange.oninput=()=>playerCountValue.innerText=playerRange.value;
 
 function dist(a,b){ return (Math.abs(a.q-b.q)+Math.abs(a.q+a.r-b.q-b.r)+Math.abs(a.r-b.r))/2; }
-function getHex(q,r){ return grid.find(h=>h.q===q && h.r===r); }
-function getPlayer(){ return players[currentIndex]; }
 
-// ===== 初始化本地遊戲 (玩家可用) =====
-function initGameLocal(){
+// ===== Firebase 棋盤 & 玩家 =====
+const boardRef = ref(db, "board");
+const playersRef = ref(db, "players");
+
+// 自動分配玩家身份
+function joinGame(){
+    myId = crypto.randomUUID();
+    runTransaction(playersRef, current=>{
+        if(current === null) current = {};
+        const count = Object.keys(current).length;
+        const maxPlayers = +playerCountValue.innerText;
+        if(count >= maxPlayers) return; // 遊客
+        current[myId] = count+1; // Player 1~6
+        myPlayer = current[myId];
+        return current;
+    }).then(res=>{
+        if(!myPlayer) status.innerHTML = "觀戰中"; 
+        else status.innerHTML = `你是玩家 ${myPlayer}`;
+    });
+}
+
+// 初始化棋盤（只由第一個玩家呼叫）
+initBtn.onclick = async ()=>{
+    const snap = await get(boardRef);
+    if(snap.exists()) return alert("棋盤已存在，請不要重複初始化！");
     radius = +sizeRange.value;
-    players = Array.from({length:+playerRange.value},(_,i)=>i+1);
-    currentIndex=0;
-    grid=[]; history=[]; selected=null; gameActive=true;
-
-    const size = Math.min(
-        (canvas.width-100)/(3*radius+1.5),
-        (canvas.height-100)/(Math.sqrt(3)*(2*radius+1))
-    );
-    hexSize=size;
+    const tempGrid = [];
 
     for(let q=-radius;q<=radius;q++){
         for(let r=Math.max(-radius,-q-radius);r<=Math.min(radius,-q+radius);r++){
-            const x=canvas.width/2+hexSize*1.5*q;
-            const y=canvas.height/2+hexSize*(Math.sqrt(3)/2*q+Math.sqrt(3)*r);
-            grid.push({q,r,x,y,owner:0,type:'normal',scale:1});
+            tempGrid.push({q,r,type:'normal',owner:0});
         }
     }
 
+    const maxPlayers = +playerCountValue.innerText;
     const starts=[[0,-radius],[radius,-radius],[radius,0],[0,radius],[-radius,radius],[-radius,0]];
-    players.forEach((p,i)=>{ let h=getHex(...starts[i]); if(h){ h.owner=p; h.type='spawn'; } });
-
-    generateObstacles(+obsRange.value);
-    saveStateToFirebase();
-    updateUI();
-}
-
-// ===== 產生障礙 =====
-function generateObstacles(n){
-    let c = grid.filter(h=>h.type==='normal' && !grid.some(s=>s.type==='spawn' && dist(s,h)<=1));
-    for(let i=0;i<n;i++){
-        if(c.length===0) break;
-        let idx=Math.floor(Math.random()*c.length);
-        c[idx].type='obstacle';
-        c.splice(idx,1);
+    for(let i=0;i<maxPlayers;i++){
+        const h = tempGrid.find(cell=>cell.q===starts[i][0] && cell.r===starts[i][1]);
+        if(h){ h.owner=i+1; h.type='spawn'; }
     }
-}
 
-// ===== 玩家動作同步 =====
-canvas.onclick=e=>{
-    if(!gameActive) return;
+    // 隨機障礙
+    let normals = tempGrid.filter(c=>c.type==='normal');
+    for(let i=0;i<+obsRange.value;i++){
+        if(normals.length===0) break;
+        const idx = Math.floor(Math.random()*normals.length);
+        normals[idx].type='obstacle';
+        normals.splice(idx,1);
+    }
+
+    set(boardRef, tempGrid);
+};
+
+// 監聽 Firebase 棋盤
+onValue(boardRef, snapshot=>{
+    const data = snapshot.val();
+    if(!data) return;
+    grid = data.map(h=>({...h}));
+    updateUI();
+});
+
+// 玩家落子
+canvas.onclick = e=>{
+    if(!gameActive || !myPlayer) return;
     const rect=canvas.getBoundingClientRect();
     const mx=(e.clientX-rect.left)*(canvas.width/rect.width);
     const my=(e.clientY-rect.top)*(canvas.height/rect.height);
-
     let h=grid.find(x=>Math.hypot(x.x-mx,x.y-my)<hexSize*0.8);
     if(!h) return;
-
-    if(h.owner===getPlayer()){
+    if(h.owner===myPlayer){
         selected = selected===h?null:h;
     } else if(selected && h.owner===0 && h.type==='normal'){
         if(dist(selected,h)<=2){
@@ -165,51 +179,44 @@ canvas.onclick=e=>{
     }
 };
 
-// ===== 將動作寫入 Firebase =====
+// 將落子同步到 Firebase
 function makeMove(a,b){
-    // 儲存動作到 Firebase
-    push(ref(db,"moves"),{
-        from:{q:a.q,r:a.r},
-        to:{q:b.q,r:b.r},
-        player:getPlayer()
+    const aIndex = grid.findIndex(h=>h.q===a.q && h.r===a.r);
+    const bIndex = grid.findIndex(h=>h.q===b.q && h.r===b.r);
+    if(dist(a,b)===2) grid[aIndex].owner = 0;
+    grid[bIndex].owner = myPlayer;
+    grid.forEach((h,i)=>{
+        if(dist(b,h)===1 && h.owner!==0 && h.owner!==myPlayer){
+            grid[i].owner = myPlayer;
+        }
     });
+    set(boardRef, grid);
 }
-
-// ===== 監聽 Firebase 動作，更新棋盤 =====
-onValue(ref(db,"moves"), snapshot=>{
-    const data = snapshot.val();
-    if(!data) return;
-    grid.forEach(h=>{ if(h.type!=='spawn' && h.owner>0) h.owner=0; }); // 重置非出生棋子
-    Object.values(data).forEach(m=>{
-        let a = getHex(m.from.q,m.from.r);
-        let b = getHex(m.to.q,m.to.r);
-        if(dist(a,b)===2) a.owner=0;
-        b.owner=m.player;
-        grid.forEach(h=>{
-            if(dist(b,h)===1 && h.owner!==0 && h.owner!==m.player){
-                h.owner=m.player;
-            }
-        });
-    });
-    updateUI();
-});
 
 function draw(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
+    const size = Math.min(
+        (canvas.width-100)/(3*+sizeRange.value+1.5),
+        (canvas.height-100)/(Math.sqrt(3)*(2*+sizeRange.value+1))
+    );
+    hexSize = size;
+    const cx = canvas.width/2;
+    const cy = canvas.height/2;
     grid.forEach(h=>{
+        const x = cx + hexSize*1.5*h.q;
+        const y = cy + hexSize*(Math.sqrt(3)/2*h.q + Math.sqrt(3)*h.r);
+        h.x=x; h.y=y;
         let color="#3a3a3a";
         if(h.type==='obstacle') color="#555";
         else if(h.owner) color=playerColors[h.owner-1];
-
         ctx.beginPath();
         for(let i=0;i<6;i++){
             let a=Math.PI/3*i;
-            ctx.lineTo(h.x+hexSize*0.9*Math.cos(a),h.y+hexSize*0.9*Math.sin(a));
+            ctx.lineTo(x+hexSize*0.9*Math.cos(a),y+hexSize*0.9*Math.sin(a));
         }
         ctx.closePath();
         ctx.fillStyle=color;
         ctx.fill();
-
         if(h===selected){
             ctx.strokeStyle="#fff";
             ctx.lineWidth=3;
@@ -220,13 +227,14 @@ function draw(){
 }
 
 function updateUI(){
+    if(players.length===0) players = Array.from({length:+playerCountValue.innerText},(_,i)=>i+1);
     let html="";
     players.forEach(p=>{
         let count=grid.filter(h=>h.owner===p).length;
         html+=`<div style="color:${playerColors[p-1]}">玩家${p}: ${count}</div>`;
     });
-    status.innerHTML=html+"<br>目前: 玩家"+getPlayer();
-
+    if(myPlayer) html += `<div>你是玩家 ${myPlayer}</div>`;
+    status.innerHTML=html;
     let leg="";
     players.forEach(p=>{
         leg+=`<div style="color:${playerColors[p-1]}">■ 玩家${p}</div>`;
@@ -234,12 +242,8 @@ function updateUI(){
     legend.innerHTML=leg;
 }
 
-function saveStateToFirebase(){
-    // 初始化棋盤
-    set(ref(db,"moves"),{});
-}
-
-initGameLocal();
+// 加入遊戲
+joinGame();
 draw();
 </script>
 </body>
